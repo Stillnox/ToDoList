@@ -4,14 +4,33 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -20,9 +39,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 // Lista de tarefas com suporte a drag and drop
 @Composable
@@ -33,105 +50,121 @@ fun TaskList(
     onReorderTasks: (Int, Int) -> Unit,
 ) {
     var draggedIndex by remember { mutableStateOf<Int?>(null) }
-    var draggedOffset by remember { mutableStateOf(0f) }
+    var dragPosition by remember { mutableStateOf(0f) }
+    var targetIndex by remember { mutableStateOf<Int?>(null) }
+
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxWidth()
-            .fillMaxHeight()
-            .background(AppColors.SurfaceDark),
-        contentPadding = PaddingValues(bottom = 120.dp)
-    ) {
-        itemsIndexed(tarefas) { index, tarefa ->
-            DraggableTaskItem(
-                index = index,
-                tarefa = tarefa,
-                isDragging = draggedIndex == index,
-                draggedOffset = if (draggedIndex == index) draggedOffset else 0f,
-                onDragStart = {
-                    draggedIndex = index
-                    draggedOffset = 0f
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                },
-                onDrag = { offset ->
-                    draggedOffset += offset
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(AppColors.SurfaceDark),
+            contentPadding = PaddingValues(bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            itemsIndexed(tarefas) { index, tarefa ->
+                val isDragging = draggedIndex == index
+                val isTarget = targetIndex == index
 
-                    // Auto-scroll quando próximo das bordas
-                    scope.launch {
-                        val itemHeightPx = with(density) { AppConstants.ITEM_HEIGHT_DP.dp.toPx() }
-                        val scrollOffset = draggedOffset / itemHeightPx
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (isTarget && draggedIndex != null) 100.dp else 60.dp)
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { offset ->
+                                    draggedIndex = index
+                                    targetIndex = index
+                                    val itemInfo = listState.layoutInfo.visibleItemsInfo.find { it.index == index }
+                                    dragPosition = (itemInfo?.offset?.toFloat() ?: 0f) + offset.y
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDrag = { _, dragAmount ->
+                                    dragPosition += dragAmount.y
 
-                        when {
-                            scrollOffset > 2f -> listState.scrollBy(itemHeightPx / 10f)
-                            scrollOffset < -2f -> listState.scrollBy(-itemHeightPx / 10f)
+                                    // Encontra o novo target baseado na posição do drag
+                                    val itemHeight = with(density) { 64.dp.toPx() }
+                                    val currentTargetIndex = ((dragPosition - listState.layoutInfo.viewportStartOffset) / itemHeight).toInt()
+                                        .coerceIn(0, tarefas.size - 1)
+
+                                    if (currentTargetIndex != targetIndex) {
+                                        targetIndex = currentTargetIndex
+                                    }
+
+                                    // Auto-scroll
+                                    scope.launch {
+                                        when {
+                                            dragPosition < 100 -> listState.scrollBy(-20f)
+                                            dragPosition > listState.layoutInfo.viewportEndOffset - 100 -> listState.scrollBy(20f)
+                                        }
+                                    }
+                                },
+                                onDragEnd = {
+                                    draggedIndex?.let { from ->
+                                        targetIndex?.let { to ->
+                                            if (from != to) {
+                                                onReorderTasks(from, to)
+                                            }
+                                        }
+                                    }
+                                    draggedIndex = null
+                                    targetIndex = null
+                                    dragPosition = 0f
+                                }
+                            )
                         }
+                ) {
+                    if (!isDragging) {
+                        TaskCard(
+                            tarefa = tarefa,
+                            isDragging = false,
+                            cardColor = if (index % 2 == 0) AppColors.DarkBlue else AppColors.LightBlue,
+                            onDeleteClick = { onDeleteTask(tarefa) },
+                            onTaskClick = { onTaskClick(tarefa) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .alpha(if (isTarget && draggedIndex != null && draggedIndex != index) 0.3f else 1f)
+                        )
                     }
-                },
-                onDragEnd = {
-                    draggedIndex?.let { currentIndex ->
-                        val itemHeightPx = with(density) { AppConstants.ITEM_HEIGHT_DP.dp.toPx() }
-                        val numberOfItems = (draggedOffset / itemHeightPx).roundToInt()
-                        val targetIndex = (currentIndex + numberOfItems)
-                            .coerceIn(0, tarefas.size - 1)
-
-                        if (currentIndex != targetIndex) {
-                            onReorderTasks(currentIndex, targetIndex)
-                        }
-                    }
-                    draggedIndex = null
-                    draggedOffset = 0f
-                },
-                onDeleteClick = { onDeleteTask(tarefa) },
-                onTaskClick = { onTaskClick(tarefa) }
-            )
+                }
+            }
         }
-    }
-}
 
-// Item de tarefa arrastável
-@Composable
-private fun DraggableTaskItem(
-    index: Int,
-    tarefa: String,
-    isDragging: Boolean,
-    draggedOffset: Float,
-    onDragStart: () -> Unit,
-    onDrag: (Float) -> Unit,
-    onDragEnd: () -> Unit,
-    onDeleteClick: () -> Unit,
-    onTaskClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 2.dp, vertical = 2.dp)
-            .graphicsLayer {
-                translationY = draggedOffset
-                scaleX = if (isDragging) AppConstants.DRAG_SCALE else 1f
-                scaleY = if (isDragging) AppConstants.DRAG_SCALE else 1f
-                alpha = if (isDragging) AppConstants.DRAG_ALPHA else 1f
+        // Overlay do item sendo arrastado
+        draggedIndex?.let { index ->
+            if (index < tarefas.size) {
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            androidx.compose.ui.unit.IntOffset(
+                                0,
+                                (dragPosition - listState.firstVisibleItemScrollOffset).toInt()
+                            )
+                        }
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp)
+                        .graphicsLayer {
+                            scaleX = AppConstants.DRAG_SCALE
+                            scaleY = AppConstants.DRAG_SCALE
+                            shadowElevation = 16f
+                        }
+                ) {
+                    TaskCard(
+                        tarefa = tarefas[index],
+                        isDragging = true,
+                        cardColor = if (index % 2 == 0) AppColors.DarkBlue else AppColors.LightBlue,
+                        onDeleteClick = {},
+                        onTaskClick = {}
+                    )
+                }
             }
-            .pointerInput(Unit) {
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { onDragStart() },
-                    onDragEnd = { onDragEnd() },
-                    onDrag = { change, _ -> onDrag(change.position.y) }
-                )
-            }
-            .zIndex(if (isDragging) 1f else 0f)
-    ) {
-        TaskCard(
-            tarefa = tarefa,
-            isDragging = isDragging,
-            cardColor = if (index % 2 == 0) AppColors.DarkBlue else AppColors.LightBlue,
-            onDeleteClick = { if (!isDragging) onDeleteClick() },
-            onTaskClick = { if (!isDragging) onTaskClick() }
-        )
+        }
     }
 }
 
@@ -143,9 +176,10 @@ private fun TaskCard(
     cardColor: Color,
     onDeleteClick: () -> Unit,
     onTaskClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(enabled = !isDragging) { onTaskClick() },
         elevation = CardDefaults.cardElevation(
