@@ -1,5 +1,6 @@
 package com.example.todolist
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
@@ -23,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,15 +36,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-// Lista de tarefas com suporte a drag and drop
+// ========== Data classes para gerenciar estado ==========
+data class DragState(
+    val draggedIndex: Int? = null,
+    val targetIndex: Int? = null,
+    val dragPosition: Float = 0f,
+    val initialOffset: Float = 0f
+)
+
+// ========== Componente principal refatorado ==========
+// Lista de tarefas com funcionalidade completa de drag and drop
 @Composable
 fun TaskList(
     tarefas: List<String>,
@@ -49,12 +64,15 @@ fun TaskList(
     onTaskClick: (String) -> Unit,
     onReorderTasks: (Int, Int) -> Unit,
 ) {
-    var draggedIndex by remember { mutableStateOf<Int?>(null) }
-    var dragPosition by remember { mutableStateOf(0f) }
-    var targetIndex by remember { mutableStateOf<Int?>(null) }
+    // Estados para controlar o drag and drop
+    var draggedIndex by remember { mutableStateOf<Int?>(null) }     // Índice do item sendo arrastado
+    var dragPosition by remember { mutableStateOf(0f) }             // Posição Y atual do drag
+    var targetIndex by remember { mutableStateOf<Int?>(null) }      // Índice onde o item será solto
+    var initialTouchOffset by remember { mutableStateOf(0f) }       // Offset inicial do toque
+    var isDragging by remember { mutableStateOf(false) }            // Flag para controlar se está arrastando
 
     val listState = rememberLazyListState()
-    val haptic = LocalHapticFeedback.current
+    val haptic = LocalHapticFeedback.current  // Para feedback tátil
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
@@ -64,95 +82,165 @@ fun TaskList(
             modifier = Modifier
                 .fillMaxSize()
                 .background(AppColors.SurfaceDark),
-            contentPadding = PaddingValues(bottom = 120.dp),
+            contentPadding = PaddingValues(bottom = 120.dp),  // Espaço para os botões flutuantes
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             itemsIndexed(tarefas) { index, tarefa ->
-                val isDragging = draggedIndex == index
+                val isItemDragging = draggedIndex == index
                 val isTarget = targetIndex == index
 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (isTarget && draggedIndex != null) 100.dp else 60.dp)
+                        .height(if (isTarget && draggedIndex != null && draggedIndex != index) 100.dp else 60.dp)  // Aumenta altura do alvo
                         .padding(horizontal = 4.dp, vertical = 2.dp)
-                        .pointerInput(Unit) {
+                        .pointerInput(index) {
                             detectDragGesturesAfterLongPress(
+                                // Inicia o drag após pressão longa
                                 onDragStart = { offset ->
+                                    Log.d("DragDrop", "Drag start - Index: $index, Offset: $offset")
+
+                                    // Reset de estados anteriores se houver
+                                    if (isDragging) {
+                                        Log.d("DragDrop", "Resetting previous drag state")
+                                        draggedIndex = null
+                                        targetIndex = null
+                                        dragPosition = 0f
+                                        initialTouchOffset = 0f
+                                        isDragging = false
+                                    }
+
                                     draggedIndex = index
                                     targetIndex = index
+                                    initialTouchOffset = offset.y
+                                    isDragging = true
+
+                                    // Calcula a posição inicial correta baseada no item visível
                                     val itemInfo = listState.layoutInfo.visibleItemsInfo.find { it.index == index }
-                                    dragPosition = (itemInfo?.offset?.toFloat() ?: 0f) + offset.y
+                                    if (itemInfo != null) {
+                                        dragPosition = itemInfo.offset.toFloat() + offset.y
+                                        Log.d("DragDrop", "Item info found - offset: ${itemInfo.offset}, touchOffset: ${offset.y}, dragPosition: $dragPosition")
+                                    } else {
+                                        // Fallback se o item não estiver visível
+                                        dragPosition = offset.y
+                                        Log.d("DragDrop", "Item info not found - using fallback, dragPosition: $dragPosition")
+                                    }
+
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 },
+                                // Atualiza posição durante o drag
                                 onDrag = { _, dragAmount ->
                                     dragPosition += dragAmount.y
 
-                                    // Encontra o novo target baseado na posição do drag
-                                    val itemHeight = with(density) { 64.dp.toPx() }
-                                    val currentTargetIndex = ((dragPosition - listState.layoutInfo.viewportStartOffset) / itemHeight).toInt()
-                                        .coerceIn(0, tarefas.size - 1)
+                                    // Calcula novo índice alvo baseado na posição real dos itens visíveis
+                                    val visibleItems = listState.layoutInfo.visibleItemsInfo
+                                    val listStartOffset = listState.layoutInfo.viewportStartOffset
+                                    val adjustedPosition = dragPosition - listStartOffset
 
-                                    if (currentTargetIndex != targetIndex) {
-                                        targetIndex = currentTargetIndex
+                                    // Encontra o item mais próximo da posição atual
+                                    var currentTargetIndex = draggedIndex ?: 0
+
+                                    // Se não há itens visíveis, manter o índice atual
+                                    if (visibleItems.isNotEmpty()) {
+                                        for (item in visibleItems) {
+                                            val itemStart = item.offset.toFloat()
+                                            val itemEnd = itemStart + item.size.toFloat()
+
+                                            if (adjustedPosition >= itemStart && adjustedPosition <= itemEnd) {
+                                                currentTargetIndex = item.index
+                                                break
+                                            } else if (adjustedPosition < itemStart) {
+                                                // Se estamos antes do primeiro item visível, usar o primeiro
+                                                currentTargetIndex = item.index
+                                                break
+                                            } else if (adjustedPosition > itemEnd && item == visibleItems.last()) {
+                                                // Se estamos depois do último item visível, usar o último
+                                                currentTargetIndex = item.index
+                                            }
+                                        }
                                     }
 
-                                    // Auto-scroll
+                                    // Garante que o índice está dentro dos limites
+                                    currentTargetIndex = currentTargetIndex.coerceIn(0, tarefas.size - 1)
+
+                                    if (currentTargetIndex != targetIndex && currentTargetIndex != draggedIndex) {
+                                        Log.d("DragDrop", "Target changed: $targetIndex -> $currentTargetIndex, Position: $adjustedPosition")
+                                        targetIndex = currentTargetIndex
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    } else {
+                                        Log.d("DragDrop", "Target unchanged: $targetIndex, Current: $currentTargetIndex, Dragged: $draggedIndex, Position: $adjustedPosition")
+                                    }
+
+                                    // Auto-scroll quando próximo das bordas
                                     scope.launch {
                                         when {
-                                            dragPosition < 100 -> listState.scrollBy(-20f)
+                                            dragPosition < listStartOffset + 100 -> listState.scrollBy(-20f)
                                             dragPosition > listState.layoutInfo.viewportEndOffset - 100 -> listState.scrollBy(20f)
                                         }
                                     }
                                 },
+                                // Finaliza o drag e reordena se necessário
                                 onDragEnd = {
-                                    draggedIndex?.let { from ->
-                                        targetIndex?.let { to ->
-                                            if (from != to) {
-                                                onReorderTasks(from, to)
-                                            }
-                                        }
-                                    }
+                                    val from = draggedIndex
+                                    val to = targetIndex
+
+                                    Log.d("DragDrop", "Drag end - From: $from, To: $to")
+
+                                    // Reset imediato dos estados
                                     draggedIndex = null
                                     targetIndex = null
                                     dragPosition = 0f
+                                    initialTouchOffset = 0f
+                                    isDragging = false
+
+                                    // Executa a reordenação se necessário
+                                    if (from != null && to != null && from != to) {
+                                        Log.d("DragDrop", "Reordering from $from to $to")
+                                        Log.d("DragDrop", "Tasks before reorder: $tarefas")
+                                        onReorderTasks(from, to)
+                                    } else {
+                                        Log.d("DragDrop", "No reordering needed - from: $from, to: $to")
+                                    }
+
+                                    Log.d("DragDrop", "States reset - draggedIndex: $draggedIndex, targetIndex: $targetIndex, isDragging: $isDragging")
                                 }
                             )
                         }
                 ) {
-                    if (!isDragging) {
+                    // Renderiza o card apenas se não estiver sendo arrastado
+                    if (!isItemDragging) {
                         TaskCard(
                             tarefa = tarefa,
                             isDragging = false,
-                            cardColor = if (index % 2 == 0) AppColors.DarkBlue else AppColors.LightBlue,
+                            cardColor = if (index % 2 == 0) AppColors.DarkBlue else AppColors.LightBlue,  // Cores alternadas
                             onDeleteClick = { onDeleteTask(tarefa) },
                             onTaskClick = { onTaskClick(tarefa) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .alpha(if (isTarget && draggedIndex != null && draggedIndex != index) 0.3f else 1f)
+                                .alpha(if (isTarget && draggedIndex != null && draggedIndex != index) 0.3f else 1f)  // Transparência no alvo
                         )
                     }
                 }
             }
         }
 
-        // Overlay do item sendo arrastado
+        // Overlay do item sendo arrastado (flutua sobre a lista)
         draggedIndex?.let { index ->
-            if (index < tarefas.size) {
+            if (index < tarefas.size && isDragging) {
                 Box(
                     modifier = Modifier
                         .offset {
                             androidx.compose.ui.unit.IntOffset(
                                 0,
-                                (dragPosition - listState.firstVisibleItemScrollOffset).toInt()
+                                (dragPosition - initialTouchOffset - listState.firstVisibleItemScrollOffset).toInt()
                             )
                         }
                         .fillMaxWidth()
                         .padding(horizontal = 4.dp)
                         .graphicsLayer {
-                            scaleX = AppConstants.DRAG_SCALE
+                            scaleX = AppConstants.DRAG_SCALE      // Aumenta tamanho durante drag
                             scaleY = AppConstants.DRAG_SCALE
-                            shadowElevation = 16f
+                            shadowElevation = 16f                 // Adiciona sombra
                         }
                 ) {
                     TaskCard(
@@ -168,7 +256,7 @@ fun TaskList(
     }
 }
 
-// Card individual de tarefa
+// Card individual que representa uma tarefa
 @Composable
 private fun TaskCard(
     tarefa: String,
@@ -181,13 +269,13 @@ private fun TaskCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(enabled = !isDragging) { onTaskClick() },
+            .clickable(enabled = !isDragging) { onTaskClick() },  // Desabilita clique durante drag
         elevation = CardDefaults.cardElevation(
-            defaultElevation = if (isDragging) 8.dp else 2.dp
+            defaultElevation = if (isDragging) 8.dp else 2.dp      // Maior elevação durante drag
         ),
         colors = CardDefaults.cardColors(
             containerColor = if (isDragging) {
-                MaterialTheme.colorScheme.primaryContainer
+                MaterialTheme.colorScheme.primaryContainer          // Cor diferente durante drag
             } else {
                 cardColor
             }
@@ -200,6 +288,7 @@ private fun TaskCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Texto da tarefa
             Text(
                 text = tarefa,
                 modifier = Modifier.weight(1f),
@@ -208,16 +297,17 @@ private fun TaskCard(
                 fontSize = 18.sp
             )
 
+            // Botão de deletar
             IconButton(
                 onClick = onDeleteClick,
-                enabled = !isDragging,
+                enabled = !isDragging,                              // Desabilita durante drag
                 modifier = Modifier.size(40.dp)
             ) {
                 Text(
                     text = "✖",
                     style = MaterialTheme.typography.titleMedium,
                     color = if (isDragging) {
-                        Color.White.copy(alpha = 0.3f)
+                        Color.White.copy(alpha = 0.3f)              // Transparente durante drag
                     } else {
                         AppColors.ErrorRed
                     }
