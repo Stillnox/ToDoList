@@ -1,7 +1,9 @@
 package com.example.todolist
 
+import TaskState
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import android.util.Log
 
 // Adiciona uma nova tarefa
 fun addTask(
@@ -94,9 +96,9 @@ fun reorderTasks(
 // Carrega tarefas do SharedPreferences
 fun loadTasksFromStorage(sharedPreferences: SharedPreferences): TaskState {
     return TaskState(
-        personalTasks = sharedPreferences.getStringSet(AppConstants.PREFS_PERSONAL, setOf())?.toList() ?: listOf(),
-        workTasks = sharedPreferences.getStringSet(AppConstants.PREFS_WORK, setOf())?.toList() ?: listOf(),
-        otherTasks = sharedPreferences.getStringSet(AppConstants.PREFS_OTHER, setOf())?.toList() ?: listOf()
+        personalTasks = sharedPreferences.getString(AppConstants.PREFS_PERSONAL, "")?.split("\n")?.filter { it.isNotBlank() } ?: listOf(),
+        workTasks = sharedPreferences.getString(AppConstants.PREFS_WORK, "")?.split("\n")?.filter { it.isNotBlank() } ?: listOf(),
+        otherTasks = sharedPreferences.getString(AppConstants.PREFS_OTHER, "")?.split("\n")?.filter { it.isNotBlank() } ?: listOf()
     )
 }
 
@@ -111,7 +113,52 @@ fun updateTasksInStorage(
         1 -> AppConstants.PREFS_WORK
         else -> AppConstants.PREFS_OTHER
     }
-    sharedPreferences.edit {
-        putStringSet(key, tarefas.toSet())
+    val success = sharedPreferences.edit().putString(key, tarefas.joinToString("\n")).commit()
+    Log.d("TaskUtils", "Salvando tarefas na categoria $categoria, key: $key, tarefas: $tarefas, sucesso: $success")
+}
+
+// Edita uma tarefa existente
+fun editTask(
+    newTaskText: String,
+    taskIndex: Int,
+    category: Int,
+    state: TaskState,
+    sharedPreferences: SharedPreferences
+): TaskState {
+    if (newTaskText.isEmpty() || taskIndex == -1) return state
+
+    val updatedState = when (category) {
+        0 -> {
+            val updatedTasks = state.personalTasks.toMutableList()
+            if (taskIndex in updatedTasks.indices) {
+                updatedTasks[taskIndex] = newTaskText
+                updateTasksInStorage(category, updatedTasks, sharedPreferences)
+                state.copy(personalTasks = updatedTasks)
+            } else state
+        }
+        1 -> {
+            val updatedTasks = state.workTasks.toMutableList()
+            if (taskIndex in updatedTasks.indices) {
+                updatedTasks[taskIndex] = newTaskText
+                updateTasksInStorage(category, updatedTasks, sharedPreferences)
+                state.copy(workTasks = updatedTasks)
+            } else state
+        }
+        else -> {
+            val updatedTasks = state.otherTasks.toMutableList()
+            if (taskIndex in updatedTasks.indices) {
+                updatedTasks[taskIndex] = newTaskText
+                updateTasksInStorage(category, updatedTasks, sharedPreferences)
+                state.copy(otherTasks = updatedTasks)
+            } else state
+        }
     }
+
+    return updatedState.copy(
+        taskText = "",
+        showAddDialog = false,
+        isEditMode = false,
+        taskToEdit = null,
+        editIndex = -1
+    )
 }
