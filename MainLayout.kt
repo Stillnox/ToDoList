@@ -1,5 +1,6 @@
 package com.example.todolist
 
+import TaskState
 import android.content.SharedPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import android.util.Log
 
 // Layout principal do aplicativo
 @Composable
@@ -23,6 +25,9 @@ fun MainLayout(
     fileLaunchers: FileLaunchers
 ) {
     val categorias = listOf("Pessoal", "Trabalho", "Outros")
+
+    // Log para debug do estado atual das tarefas
+    Log.d("MainLayout", "Tarefas atuais: ${appState.getCurrentTasks()}")
 
     Column(
         modifier = Modifier
